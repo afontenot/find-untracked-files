@@ -1,12 +1,12 @@
 # find-untracked-files
 Find files in a directory that are not owned by any Arch Linux package
 
-## What it does
+## What is it for?
 Have you ever encountered this problem?
 
     $ sudo pacman -S maven
     error: failed to commit transaction (conflicting files)
-    maven: /usr/bin/mnv exists in filesystem
+    maven: /usr/bin/mvn exists in filesystem
 
 As you probably know, on most Linux systems, including Arch Linux,
 you're not really supposed to install things manually to system 
@@ -48,7 +48,7 @@ file lists from ALPM (technically, the pyalpm bindings for Python,
 available in the `extra` repository) and *caches* them, doing the 
 search for each file only once.
 
-## How do I use the program
+## How do I use the program?
 
 First, install 
 [`pyalpm`](https://archlinux.org/packages/extra/x86_64/pyalpm/) 
