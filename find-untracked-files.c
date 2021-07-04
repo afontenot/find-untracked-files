@@ -32,7 +32,7 @@ static const int d_types[7] = {
 };
 
 // usage data for argparse
-static const char *const usage[] = {
+static const char* const usage[] = {
     "find-untracked-files [options] /path/to/search [/other/paths]",
     NULL,
 };
@@ -66,7 +66,7 @@ int getfiletype(char* path) {
 //   With FTS_NOSTAT set, you can't use the FTSENT
 //   to distinguish symlinks from real files.
 //   <ftw.h> unavoidably calls stat on each file.
-int walkdir(char* path, int symlinks, int (*callback)(char*)) {
+int walkdir(char* path, int symlinks, int (* callback)(char*)) {
     DIR* dir = opendir(path);
     if(!dir) {
         if (errno == EACCES) {
@@ -152,7 +152,7 @@ int printdir(char *filepath) {
     return 0;
 }
 
-int main(int argc, const char **argv) {
+int main(int argc, const char* argv[]) {
     // parse arguments
     const char* root = "/";
     const char* db = "/var/lib/pacman";
@@ -233,6 +233,8 @@ int main(int argc, const char **argv) {
         
             exit(EXIT_FAILURE);
         }
+
+        free(path);
     }
 
     // clean up
