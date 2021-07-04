@@ -43,20 +43,29 @@ even if you request ownership data for multiple files.
 On my computer, I have over 750,000 files in `/usr`. This approach 
 clearly won't work.
 
-**Instead** I wrote a simple program in Python that requests the 
-file lists from ALPM (technically, the pyalpm bindings for Python,
-available in the `extra` repository) and *caches* them, doing the 
-search for each file only once.
+**Instead** I wrote a C program that requests the file lists 
+directly from ALPM and *caches* them using a hash table, making the
+search for each file very fast. (Hash table lookups have O(1) 
+average complexity.)
+
+Note that the C version of the program (as opposed to the default
+Python implementation, which is only about twice as slow) is
+experimental.
 
 ## How do I use the program?
 
 First, install 
-[`pyalpm`](https://archlinux.org/packages/extra/x86_64/pyalpm/) 
-using Pacman.
+[`meson`](https://archlinux.org/packages/extra/any/meson/).
+
+Build the program with
+
+    meson build && ninja -C build
+
+The resulting binary is in the `build` directory.
 
 Basic usage is simple:
 
-    python find-untracked-files.py /path/to/search
+    ./find-untracked-files /path/to/search
 
 This will use the default location for installed packages (the root
 directory, '/') and for the database location ('/var/lib/pacman').
@@ -65,18 +74,31 @@ If for some reason you have different settings, you can set them with
 
 You can also specify multiple search paths:
 
-    python find-untracked-files.py /path1 /path2
+    ./find-untracked-files /path1 /path2
+
+You can disable searching for symbolic links in Arch packages:
+
+    ./find-untracked-files -s /path/to/search
 
 Basic help is available in the program:
 
-    python find-untracked-files.py -h
+    ./find-untracked-files -h
 
 ## How fast is it?
 
 Scanning my 750,000 file directory and checking for unowned files 
-takes my computer 4 seconds (on an SSD). I don't know exactly how
-much faster this is than the `find` approach above, because the 
-latter still hasn't finished running while I was writing this README.
+takes my computer only ~1.5 seconds.
+
+The find command utilizing parallel took more than 420 times longer
+to run! This is slow enough that it's difficult to re-run it to see
+changes after you've removed certain files or packages.
+
+`libalpm` is smart enough not to touch the disk twice to get the 
+file list for a package as long as its handle stays alive, so the
+parallel approach is actually *vastly* better than the naive `find`.
+If you call `pacman` once for every file, obviously this caching
+doesn't happen. A rough calculation suggests that the 
+non-parallelized version would take nearly a week to run.
 
 ## Alternatives
 
