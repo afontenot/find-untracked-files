@@ -77,3 +77,24 @@ Scanning my 750,000 file directory and checking for unowned files
 takes my computer 4 seconds (on an SSD). I don't know exactly how
 much faster this is than the `find` approach above, because the 
 latter still hasn't finished running while I was writing this README.
+
+## Alternatives
+
+The [Arch Wiki](https://wiki.archlinux.org/title/Pacman/Tips_and_tricks)
+suggests a program called `pacreport` to find unowned files.
+Unfortunately, this program is rather flawed. It doesn't allow you to
+scan particular directories, instead the whole file system is scanned
+on every run (with certain directories hardcoded as exceptions).
+
+Also, if you check the 
+[code](https://github.com/andrewgregory/pacutils/blob/master/src/pacreport.c#L484)
+for `pacreport`, you'll see that despite being written to solve this 
+exact problem, it does the same thing that `pacman` does. It scans
+your entire package database for every single file on your system
+to see if anything owns the file. For that reason, `pacreport` is
+extremely slow, similar to the approaches I mentioned in the 
+discussion above.
+
+`pacreport` does allow you to exclude certain files and directories
+from being scanned, which I have not yet implemented for this
+program.
