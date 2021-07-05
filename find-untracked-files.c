@@ -1,5 +1,5 @@
-#include <alpm.h>
-#include <alpm_list.h>
+#include <alpm.h>              // for alpm_db_get_pkgcache, alpm_file_t, alp...
+#include <alpm_list.h>         // for alpm_list_next, alpm_list_t
 #include <bits/struct_stat.h>
 #include <dirent.h>
 #include <errno.h>
@@ -8,8 +8,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "lib/argparse.h"
-#include "lib/cc_hashset.h"
+#include "lib/argparse.h"      // for argparse_describe, argparse_init, argp...
+#include "lib/cc_hashset.h"    // for CC_HashSet, cc_hashset_add, cc_hashset...
 
 // fallback method that calls lstat to get file type
 int getfiletype(char* path) {
