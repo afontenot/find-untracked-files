@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -38,20 +39,25 @@ int getfiletype(char* path) {
 //   With FTS_NOSTAT set, you can't use the FTSENT
 //   to distinguish symlinks from real files.
 //   <ftw.h> unavoidably calls stat on each file.
-int walkdir(char* path, int symlinks, int (* callback)(char*, CC_HashSet*), CC_HashSet* hs) {
+int walkdir(char* path, int symlinks, bool silent,
+            int (* callback)(char*, CC_HashSet*), CC_HashSet* hs) {
+    // try to open the dir; we don't fail on access errors,
+    // preferring to print a warning and continue instead
     DIR* dir = opendir(path);
     if(!dir) {
         if (errno == EACCES) {
-            fprintf(stderr, 
-                    "find-untracked-files: cannot open "
-                    "directory '%s': Permission denied\n", 
-                    path);
+            if (!silent) {
+                fprintf(stderr,
+                        "find-untracked-files: cannot open "
+                        "directory '%s': Permission denied\n",
+                        path);
+            }
             errno = 0;
             return 0;
         } else {
-            fprintf(stderr, 
-                    "cannot open directory '%s': error %d\n", 
-                    path, 
+            fprintf(stderr,
+                    "cannot open directory '%s': error %d\n",
+                    path,
                     errno);
             return -1; // treat unknown errors as fatal
         }
@@ -89,11 +95,11 @@ int walkdir(char* path, int symlinks, int (* callback)(char*, CC_HashSet*), CC_H
         // recurse
         if (type == DT_DIR) {
             // readdir returns POSIX dot files
-            if (!strcmp(entry->d_name, ".") || 
+            if (!strcmp(entry->d_name, ".") ||
                 !strcmp(entry->d_name, ".."))
                 continue;
 
-            int wd_err = walkdir(fullpath, symlinks, callback, hs);
+            int wd_err = walkdir(fullpath, symlinks, silent, callback, hs);
             if (wd_err)
                 return wd_err;
         }
@@ -121,7 +127,7 @@ int walkdir(char* path, int symlinks, int (* callback)(char*, CC_HashSet*), CC_H
 }
 
 int printdir(char *filepath, CC_HashSet* hs) {
-    void* path_ptr = filepath + 1; 
+    void* path_ptr = filepath + 1;
     if (!cc_hashset_contains(hs, path_ptr)) {
         printf("%s\n", filepath);
     }
@@ -139,7 +145,8 @@ int main(int argc, const char* argv[]) {
     // parse arguments - initialize with defaults
     char root[] = "/";
     char db[] = "/var/lib/pacman";
-    int nosymlinks = 0;
+    bool nosymlinks = false;
+    bool silent = false;
     struct argparse_option options[] = {
         OPT_HELP(),
         OPT_STRING('r', "root", &root,
@@ -150,11 +157,13 @@ int main(int argc, const char* argv[]) {
                    "(default: '/var/lib/pacman')"),
         OPT_BOOLEAN('s', "no-symlinks", &nosymlinks,
                     "disable checking symbolic links "),
+        OPT_BOOLEAN('q', "quiet", &silent,
+                    "disable printing all non-fatal errors"),
         OPT_END(),
     };
     struct argparse argparse;
     argparse_init(&argparse, options, usage, 0);
-    argparse_describe(&argparse, 
+    argparse_describe(&argparse,
                       "\nFind files not part of any Pacman package",
                       "");
     argc = argparse_parse(&argparse, argc, argv);
@@ -163,26 +172,26 @@ int main(int argc, const char* argv[]) {
     if (argc == 0) {
         fprintf(stderr, "No directory specified to search.\n");
         exit(EXIT_FAILURE);
-    } 
+    }
 
     // initialize hash set
     CC_HashSet* hs;
     cc_hashset_new(&hs);
-    
+
     // get handle to local database
     alpm_errno_t alpm_err;
     alpm_handle_t* handle = alpm_initialize(root, db, &alpm_err);
     if (!handle) {
-        fprintf(stderr, "cannot initialize alpm: %s\n", 
+        fprintf(stderr, "cannot initialize alpm: %s\n",
                 alpm_strerror(alpm_err));
         exit(EXIT_FAILURE);
     }
 
     // FIXME: figure out why alpm_initialize is setting errno
     //
-    // alpm_initialize apparently sets errno for some correctable 
-    // failures; we have to reset it to zero here because readdir 
-    // does not unambiguously signal failure, thus requiring 
+    // alpm_initialize apparently sets errno for some correctable
+    // failures; we have to reset it to zero here because readdir
+    // does not unambiguously signal failure, thus requiring
     // explicit errno checks
     errno = 0;
 
@@ -200,7 +209,7 @@ int main(int argc, const char* argv[]) {
             cc_hashset_add(hs, file->name);
         }
     }
-    
+
     // remaining args are all user-chosen paths to search
     for (int i = 0; i < argc; i++) {
         char* path = strdup(*(argv + i));
@@ -208,13 +217,13 @@ int main(int argc, const char* argv[]) {
         // because we match path strings exactly, delete trailing slash
         if (path[strlen(path)-1] == '/')
             path[strlen(path)-1] = '\0';
-        
+
         // walk through file system
-        int rd_error = walkdir(path, (1-nosymlinks), printdir, hs);
+        int rd_error = walkdir(path, (1-nosymlinks), silent, printdir, hs);
         if (rd_error) {
             if (errno)
                 fprintf(stderr, "Error: %d\n", errno);
-        
+
             exit(EXIT_FAILURE);
         }
 
