@@ -11,34 +11,6 @@
 #include "lib/argparse.h"
 #include "lib/cc_hashset.h"
 
-// pair of arrays allowing easy conversion between types
-static const int s_types[7] = {
-    S_IFREG, 
-    S_IFDIR, 
-    S_IFLNK, 
-    S_IFBLK, 
-    S_IFCHR, 
-    S_IFIFO, 
-    S_IFSOCK
-};
-static const int d_types[7] = {
-    DT_REG, 
-    DT_DIR, 
-    DT_LNK, 
-    DT_BLK, 
-    DT_CHR, 
-    DT_FIFO, 
-    DT_SOCK
-};
-
-// usage data for argparse
-static const char* const usage[] = {
-    "find-untracked-files [options] /path/to/search [/other/paths]",
-    NULL,
-};
-
-CC_HashSet* hs;
-
 // fallback method that calls lstat to get file type
 int getfiletype(char* path) {
     struct stat sb;
@@ -51,22 +23,22 @@ int getfiletype(char* path) {
     // get the file type flags
     int fmt = (sb.st_mode & S_IFMT);
 
-    // convert flags from stat.h types to dirent.h types
-    for (int i = 0; i < 7; i++) {
-        if (fmt == s_types[i])
-            return d_types[i];
-    }
-
-    // if we didn't have a matching s_type, that's an error
-    fprintf(stderr, "Error: %s has an unknown file type\n", path);
-    return -1;
+    // return dirent.h type from stat.h type
+    return (fmt == S_IFREG) ? DT_REG :
+           (fmt == S_IFDIR) ? DT_DIR :
+           (fmt == S_IFLNK) ? DT_LNK :
+           (fmt == S_IFBLK) ? DT_BLK :
+           (fmt == S_IFCHR) ? DT_CHR :
+           (fmt == S_IFIFO) ? DT_FIFO :
+           (fmt == S_IFSOCK) ? DT_SOCK :
+           DT_UNKNOWN;
 }
 
 // Why use a custom tree walker instead of <fts.h>?
 //   With FTS_NOSTAT set, you can't use the FTSENT
 //   to distinguish symlinks from real files.
 //   <ftw.h> unavoidably calls stat on each file.
-int walkdir(char* path, int symlinks, int (* callback)(char*)) {
+int walkdir(char* path, int symlinks, int (* callback)(char*, CC_HashSet*), CC_HashSet* hs) {
     DIR* dir = opendir(path);
     if(!dir) {
         if (errno == EACCES) {
@@ -108,8 +80,11 @@ int walkdir(char* path, int symlinks, int (* callback)(char*)) {
 #endif
 
         // verify that we have something sane
-        if ((int)type == -1)
+        if (type == DT_UNKNOWN) {
+            fprintf(stderr, "FAIL: could not get "
+                    "file type of %s\n", fullpath);
             return -1;
+        }
 
         // recurse
         if (type == DT_DIR) {
@@ -118,24 +93,25 @@ int walkdir(char* path, int symlinks, int (* callback)(char*)) {
                 !strcmp(entry->d_name, ".."))
                 continue;
 
-            int wd_error = walkdir(fullpath, symlinks, callback);
-            if (wd_error) 
-                return wd_error;
+            int wd_err = walkdir(fullpath, symlinks, callback, hs);
+            if (wd_err)
+                return wd_err;
         }
 
         // handle regular files
         if (type == DT_REG || (type == DT_LNK && symlinks)) {
-            int cb_error = callback(fullpath);
+            int cb_error = callback(fullpath, hs);
             if (cb_error)
                 return cb_error;
         }
 
-        // we ignore anything else (symlinks, block devices, etc)
+        // we ignore anything else (e.g. block devices, etc)
         // so if we get to this point, we're done
     }
 
     // readdir() exits with NULL on error or finishing,
     // so we have to check for errors explicitly
+    // see `man 3 readdir`
     if (errno)
         return -1;
 
@@ -144,7 +120,7 @@ int walkdir(char* path, int symlinks, int (* callback)(char*)) {
     return 0;
 }
 
-int printdir(char *filepath) {
+int printdir(char *filepath, CC_HashSet* hs) {
     void* path_ptr = filepath + 1; 
     if (!cc_hashset_contains(hs, path_ptr)) {
         printf("%s\n", filepath);
@@ -153,9 +129,16 @@ int printdir(char *filepath) {
 }
 
 int main(int argc, const char* argv[]) {
-    // parse arguments
-    const char* root = "/";
-    const char* db = "/var/lib/pacman";
+    // usage data for argparse
+    static const char* const usage[] = {
+        "find-untracked-files [options] "
+        "/path/to/search [/other/paths]",
+        NULL,
+    };
+
+    // parse arguments - initialize with defaults
+    char root[] = "/";
+    char db[] = "/var/lib/pacman";
     int nosymlinks = 0;
     struct argparse_option options[] = {
         OPT_HELP(),
@@ -183,6 +166,7 @@ int main(int argc, const char* argv[]) {
     } 
 
     // initialize hash set
+    CC_HashSet* hs;
     cc_hashset_new(&hs);
     
     // get handle to local database
@@ -226,7 +210,7 @@ int main(int argc, const char* argv[]) {
             path[strlen(path)-1] = '\0';
         
         // walk through file system
-        int rd_error = walkdir(path, (1-nosymlinks), printdir);
+        int rd_error = walkdir(path, (1-nosymlinks), printdir, hs);
         if (rd_error) {
             if (errno)
                 fprintf(stderr, "Error: %d\n", errno);
@@ -237,9 +221,7 @@ int main(int argc, const char* argv[]) {
         free(path);
     }
 
-    // clean up
-    alpm_release(handle);
     cc_hashset_destroy(hs);
-    
+    alpm_release(handle);
     exit(EXIT_SUCCESS);
 }
