@@ -155,7 +155,7 @@ int main(int argc, const char* argv[]) {
         OPT_STRING('d', "db", &db,
                    "path to the pkg database "
                    "(default: '/var/lib/pacman')"),
-        OPT_BOOLEAN('s', "no-symlinks", &nosymlinks,
+        OPT_BOOLEAN('n', "no-symlinks", &nosymlinks,
                     "disable checking symbolic links "),
         OPT_BOOLEAN('q', "quiet", &silent,
                     "disable printing all non-fatal errors"),
