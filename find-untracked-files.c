@@ -44,8 +44,8 @@ int getfiletype(char* path) {
 // Arguments: requires a callback function to be passed that takes a string
 //   and a CC_HashSet; we pass the latter on directly, and it determines
 //   whether to print the string based on whether it is in the hashset.
-int walkdir(char* path, int symlinks, bool silent, int root_path_len,
-            int (* callback)(char*, int, CC_HashSet*), CC_HashSet* hs) {
+int walkdir(char* path, int symlinks, bool silent,
+            int (* callback)(char*, CC_HashSet*), CC_HashSet* hs) {
     // try to open the dir; we don't fail on access errors
     // preferring to print a warning and continue instead
     DIR* dir = opendir(path);
@@ -73,6 +73,7 @@ int walkdir(char* path, int symlinks, bool silent, int root_path_len,
     while ((entry = readdir(dir)) != NULL) {
         // reconstruct the full path
         // account for \0 termination and additional '/'
+        // FIXME: consider using `openat` to avoid string manipulation
         int pathlen = strlen(path) + strlen(entry->d_name) + 2;
         char fullpath[pathlen];
         snprintf(fullpath, pathlen, "%s/%s", path, entry->d_name);
@@ -102,15 +103,14 @@ int walkdir(char* path, int symlinks, bool silent, int root_path_len,
                 !strcmp(entry->d_name, ".."))
                 continue;
 
-            int wd_err = walkdir(fullpath, symlinks, silent, root_path_len,
-                                 callback, hs);
+            int wd_err = walkdir(fullpath, symlinks, silent, callback, hs);
             if (wd_err)
                 return wd_err;
         }
 
         // handle regular files
         if (type == DT_REG || (type == DT_LNK && symlinks)) {
-            int cb_error = callback(fullpath, root_path_len, hs);
+            int cb_error = callback(fullpath, hs);
             if (cb_error)
                 return cb_error;
         }
@@ -130,17 +130,8 @@ int walkdir(char* path, int symlinks, bool silent, int root_path_len,
 }
 
 // decides whether to print a file path; function passed to walkdir()
-int printdir(char *filepath, int root_path_len, CC_HashSet* hs) {
-    // remove root directory, because hash set contains relative paths
-    void* path_ptr;
-    if (root_path_len == 1 || strlen(filepath) >= root_path_len) {
-        path_ptr = filepath + 1;
-    } else {
-        fprintf(stderr, "FAIL: %s does not contain your root dir\n", filepath);
-        return -1;
-    }
-
-    if (!cc_hashset_contains(hs, path_ptr)) {
+int printdir(char *filepath, CC_HashSet* hs) {
+    if (!cc_hashset_contains(hs, (void*) filepath)) {
         printf("%s\n", filepath);
     }
     return 0;
@@ -211,15 +202,38 @@ int main(int argc, const char* argv[]) {
     // get a list of local packages
     alpm_list_t* pkgs = alpm_db_get_pkgcache(localdb);
 
+    // we modify the file paths to add the root file path
+    // so we have to keep the pointers in scope for the full hashmap lifetime
+    int filepaths_len = 1000;
+    char** filepaths;
+    filepaths = malloc(filepaths_len * sizeof(void *));
+
     // loop over local packages, add to set
+    int filepath_i = 0;
     for (alpm_list_t* lp = pkgs; lp; lp = alpm_list_next(lp)) {
         alpm_pkg_t* pkg = lp->data;
         alpm_filelist_t* filelist = alpm_pkg_get_files(pkg);
         for(size_t i = 0; i < filelist->count; i++) {
+            if (filepath_i >= filepaths_len) {
+                filepaths_len *= 2;
+                filepaths = realloc(filepaths, filepaths_len * sizeof(void *));
+                if (filepaths == NULL) {
+                    fprintf(stderr, "realloc of file path array failed!\n");
+                    exit(EXIT_FAILURE);
+                }
+            }
+
             const alpm_file_t *file = filelist->files + i;
-            cc_hashset_add(hs, file->name);
+            filepaths[filepath_i] = malloc(strlen(root) + strlen(file->name) + 1);
+            strcpy(filepaths[filepath_i], root);
+            strcat(filepaths[filepath_i], file->name);
+            cc_hashset_add(hs, filepaths[filepath_i]);
+            filepath_i++;
         }
     }
+
+    // clean up alpm since we're caching modified path names
+    alpm_release(handle);
 
     // remaining args are all user-chosen paths to search
     for (int i = 0; i < argc; i++) {
@@ -230,8 +244,7 @@ int main(int argc, const char* argv[]) {
             path[strlen(path)-1] = '\0';
 
         // walk through file system
-        int rd_error = walkdir(path, (1-nosymlinks), silent, strlen(root),
-                               printdir, hs);
+        int rd_error = walkdir(path, (1-nosymlinks), silent, printdir, hs);
         if (rd_error) {
             if (errno)
                 fprintf(stderr, "Error: %d\n", errno);
@@ -242,7 +255,14 @@ int main(int argc, const char* argv[]) {
         free(path);
     }
 
+    // clean up hashset
     cc_hashset_destroy(hs);
-    alpm_release(handle);
+
+    // deallocate file path array
+    for (int i = 0; i <= filepath_i; i++) {
+        free(filepaths[i]);
+    }
+    free(filepaths);
+
     exit(EXIT_SUCCESS);
 }
