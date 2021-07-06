@@ -35,13 +35,18 @@ int getfiletype(char* path) {
            DT_UNKNOWN;
 }
 
-// Why use a custom tree walker instead of <fts.h>?
-//   With FTS_NOSTAT set, you can't use the FTSENT
-//   to distinguish symlinks from real files.
-//   <ftw.h> unavoidably calls stat on each file.
+// Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using 
+//   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
+//   from real files. <ftw.h> calls stat on each file.
+// FIXME: we naively traverse the directories and hold open a file descriptor
+//   at each recursion. On sensible modern Arch systems this shouldn't be a 
+//   problem, but in theory we could run out.
+// Arguments: requires a callback function to be passed that takes a string
+//   and a CC_HashSet; we pass the latter on directly, and it determines
+//   whether to print the string based on whether it is in the hashset.
 int walkdir(char* path, int symlinks, bool silent,
             int (* callback)(char*, CC_HashSet*), CC_HashSet* hs) {
-    // try to open the dir; we don't fail on access errors,
+    // try to open the dir; we don't fail on access errors
     // preferring to print a warning and continue instead
     DIR* dir = opendir(path);
     if(!dir) {
@@ -64,7 +69,6 @@ int walkdir(char* path, int symlinks, bool silent,
     }
 
     // read through every entry in directory
-    // on supported systems, we avoid calling stat
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
         // reconstruct the full path
@@ -73,9 +77,8 @@ int walkdir(char* path, int symlinks, bool silent,
         char fullpath[pathlen];
         snprintf(fullpath, pathlen, "%s/%s", path, entry->d_name);
 
-        // on supported systems, we avoid calling stat, which is slow
-        // most systems should have d_type
-        // but weird FS may ret DT_UNKNOWN
+        // if readdir adds d_type to our dirent we can avoid calling stat
+        // most systems support this, but an unusual FS may return DT_UNKNOWN
 #ifdef _DIRENT_HAVE_D_TYPE
         unsigned char type = entry->d_type;
         if (type == DT_UNKNOWN) {
@@ -111,8 +114,7 @@ int walkdir(char* path, int symlinks, bool silent,
                 return cb_error;
         }
 
-        // we ignore anything else (e.g. block devices, etc)
-        // so if we get to this point, we're done
+        // if we get this far, it isn't a file type we care about, so continue
     }
 
     // readdir() exits with NULL on error or finishing,
@@ -126,7 +128,10 @@ int walkdir(char* path, int symlinks, bool silent,
     return 0;
 }
 
+// decides whether to print a file path; function passed to walkdir()
 int printdir(char *filepath, CC_HashSet* hs) {
+    // remove root directory, because hash set contains relative paths
+    // FIXME: only removes one char (the default '/' root directory)
     void* path_ptr = filepath + 1;
     if (!cc_hashset_contains(hs, path_ptr)) {
         printf("%s\n", filepath);
@@ -189,10 +194,9 @@ int main(int argc, const char* argv[]) {
 
     // FIXME: figure out why alpm_initialize is setting errno
     //
-    // alpm_initialize apparently sets errno for some correctable
-    // failures; we have to reset it to zero here because readdir
-    // does not unambiguously signal failure, thus requiring
-    // explicit errno checks
+    // alpm_initialize apparently sets errno for some correctable failures; we
+    // have to reset it to zero here because readdir does not unambiguously
+    // signal failure, thus requiring explicit errno checks
     errno = 0;
 
     alpm_db_t* localdb = alpm_get_localdb(handle);
