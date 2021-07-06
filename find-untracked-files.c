@@ -35,17 +35,17 @@ int getfiletype(char* path) {
            DT_UNKNOWN;
 }
 
-// Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using 
+// Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
 //   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
 //   from real files. <ftw.h> calls stat on each file.
 // FIXME: we naively traverse the directories and hold open a file descriptor
-//   at each recursion. On sensible modern Arch systems this shouldn't be a 
+//   at each recursion. On sensible modern Arch systems this shouldn't be a
 //   problem, but in theory we could run out.
 // Arguments: requires a callback function to be passed that takes a string
 //   and a CC_HashSet; we pass the latter on directly, and it determines
 //   whether to print the string based on whether it is in the hashset.
-int walkdir(char* path, int symlinks, bool silent,
-            int (* callback)(char*, CC_HashSet*), CC_HashSet* hs) {
+int walkdir(char* path, int symlinks, bool silent, int root_path_len,
+            int (* callback)(char*, int, CC_HashSet*), CC_HashSet* hs) {
     // try to open the dir; we don't fail on access errors
     // preferring to print a warning and continue instead
     DIR* dir = opendir(path);
@@ -102,14 +102,15 @@ int walkdir(char* path, int symlinks, bool silent,
                 !strcmp(entry->d_name, ".."))
                 continue;
 
-            int wd_err = walkdir(fullpath, symlinks, silent, callback, hs);
+            int wd_err = walkdir(fullpath, symlinks, silent, root_path_len,
+                                 callback, hs);
             if (wd_err)
                 return wd_err;
         }
 
         // handle regular files
         if (type == DT_REG || (type == DT_LNK && symlinks)) {
-            int cb_error = callback(fullpath, hs);
+            int cb_error = callback(fullpath, root_path_len, hs);
             if (cb_error)
                 return cb_error;
         }
@@ -129,10 +130,16 @@ int walkdir(char* path, int symlinks, bool silent,
 }
 
 // decides whether to print a file path; function passed to walkdir()
-int printdir(char *filepath, CC_HashSet* hs) {
+int printdir(char *filepath, int root_path_len, CC_HashSet* hs) {
     // remove root directory, because hash set contains relative paths
-    // FIXME: only removes one char (the default '/' root directory)
-    void* path_ptr = filepath + 1;
+    void* path_ptr;
+    if (root_path_len == 1 || strlen(filepath) >= root_path_len) {
+        path_ptr = filepath + 1;
+    } else {
+        fprintf(stderr, "FAIL: %s does not contain your root dir\n", filepath);
+        return -1;
+    }
+
     if (!cc_hashset_contains(hs, path_ptr)) {
         printf("%s\n", filepath);
     }
@@ -223,7 +230,8 @@ int main(int argc, const char* argv[]) {
             path[strlen(path)-1] = '\0';
 
         // walk through file system
-        int rd_error = walkdir(path, (1-nosymlinks), silent, printdir, hs);
+        int rd_error = walkdir(path, (1-nosymlinks), silent, strlen(root),
+                               printdir, hs);
         if (rd_error) {
             if (errno)
                 fprintf(stderr, "Error: %d\n", errno);
