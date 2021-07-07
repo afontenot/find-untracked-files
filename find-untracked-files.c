@@ -72,11 +72,13 @@ int walkdir(char* path, int symlinks, bool silent,
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
         // reconstruct the full path
+        // not too wasteful, we have to check the hashmap for the path anyway
         // account for \0 termination and additional '/'
-        // FIXME: consider using `openat` to avoid string manipulation
         int pathlen = strlen(path) + strlen(entry->d_name) + 2;
         char fullpath[pathlen];
-        snprintf(fullpath, pathlen, "%s/%s", path, entry->d_name);
+        strcpy(fullpath, path);
+        strcat(fullpath, "/"); // we know that path is not terminated with /
+        strcat(fullpath, entry->d_name);
 
         // if readdir adds d_type to our dirent we can avoid calling stat
         // most systems support this, but an unusual FS may return DT_UNKNOWN
