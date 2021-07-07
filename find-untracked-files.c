@@ -101,8 +101,7 @@ int walkdir(char* path, int symlinks, bool silent,
         // recurse
         if (type == DT_DIR) {
             // readdir returns POSIX dot files
-            if (!strcmp(entry->d_name, ".") ||
-                !strcmp(entry->d_name, ".."))
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
                 continue;
 
             int wd_err = walkdir(fullpath, symlinks, silent, callback, hs);
@@ -120,7 +119,7 @@ int walkdir(char* path, int symlinks, bool silent,
         // if we get this far, it isn't a file type we care about, so continue
     }
 
-    // readdir() exits with NULL on error or finishing,
+    // readdir() exits with NULL on error AND after returning the last file,
     // so we have to check for errors explicitly
     // see `man 3 readdir`
     if (errno)
@@ -132,7 +131,7 @@ int walkdir(char* path, int symlinks, bool silent,
 }
 
 // decides whether to print a file path; function passed to walkdir()
-int printdir(char *filepath, CC_HashSet* hs) {
+int printdir(char* filepath, CC_HashSet* hs) {
     if (!cc_hashset_contains(hs, (void*) filepath)) {
         printf("%s\n", filepath);
     }
@@ -168,9 +167,7 @@ int main(int argc, const char* argv[]) {
     };
     struct argparse argparse;
     argparse_init(&argparse, options, usage, 0);
-    argparse_describe(&argparse,
-                      "\nFind files not part of any Pacman package",
-                      "");
+    argparse_describe(&argparse, "\nFind files unowned by Arch packages", "");
     argc = argparse_parse(&argparse, argc, argv);
 
     // handle additional arguments (file paths)
@@ -246,7 +243,7 @@ int main(int argc, const char* argv[]) {
             path[strlen(path)-1] = '\0';
 
         // walk through file system
-        int rd_error = walkdir(path, (1-nosymlinks), silent, printdir, hs);
+        int rd_error = walkdir(path, !nosymlinks, silent, printdir, hs);
         if (rd_error) {
             if (errno)
                 fprintf(stderr, "Error: %d\n", errno);
