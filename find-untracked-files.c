@@ -167,7 +167,7 @@ int main(int argc, const char* argv[]) {
     };
     struct argparse argparse;
     argparse_init(&argparse, options, usage, 0);
-    argparse_describe(&argparse, "\nFind files unowned by Arch packages", "");
+    argparse_describe(&argparse, "\nFind files not tracked by Pacman", "");
     argc = argparse_parse(&argparse, argc, argv);
 
     // handle additional arguments (file paths)
