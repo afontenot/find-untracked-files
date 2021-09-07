@@ -35,17 +35,18 @@ int getfiletype(char* path) {
            DT_UNKNOWN;
 }
 
-// Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
-//   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
-//   from real files. <ftw.h> calls stat on each file.
-// FIXME: we naively traverse the directories and hold open a file descriptor
-//   at each recursion. On sensible modern Arch systems this shouldn't be a
-//   problem, but in theory we could run out.
-// Arguments: requires a callback function to be passed that takes a string
-//   and a GHashTable; we pass the latter on directly, and it determines
-//   whether to print the string based on whether it is in the hashset.
+/* Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
+ *   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
+ *   from real files. <ftw.h> calls stat on each file.
+ * FIXME: we naively traverse the directories and hold open a file descriptor
+ *   at each recursion. On sensible modern Arch systems this shouldn't be a
+ *   problem, but in theory we could run out.
+ * Arguments: requires a callback function to be passed that takes a string
+ *   and a GHashTable; we pass the latter on directly, and it determines
+ *   whether to print the string based on whether it is in the hashset.
+ */
 int walkdir(char* path, int symlinks, bool silent,
-            int (* callback)(char*, GHashTable*), GHashTable* hs) {
+            int callback(char*, GHashTable*), GHashTable* hs) {
     // try to open the dir; we don't fail on access errors
     // preferring to print a warning and continue instead
     DIR* dir = opendir(path);
@@ -119,9 +120,9 @@ int walkdir(char* path, int symlinks, bool silent,
         // if we get this far, it isn't a file type we care about, so continue
     }
 
-    // readdir() exits with NULL on error AND after returning the last file,
-    // so we have to check for errors explicitly
-    // see `man 3 readdir`
+    /* readdir() exits with NULL on error AND after returning the last file,
+     * so we have to check for errors explicitly. See `man 3 readdir`
+     */
     if (errno)
         return -1;
 
@@ -188,11 +189,12 @@ int main(int argc, const char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // FIXME: figure out why alpm_initialize is setting errno
-    //
-    // alpm_initialize apparently sets errno for some correctable failures; we
-    // have to reset it to zero here because readdir does not unambiguously
-    // signal failure, thus requiring explicit errno checks
+    /* FIXME: figure out why alpm_initialize is setting errno
+     *
+     * alpm_initialize apparently sets errno for some correctable failures; we
+     * have to reset it to zero here because readdir does not unambiguously
+     * signal failure, thus requiring explicit errno checks
+     */
     errno = 0;
 
     alpm_db_t* localdb = alpm_get_localdb(handle);
@@ -204,7 +206,7 @@ int main(int argc, const char* argv[]) {
     // so we have to keep the pointers in scope for the full hashmap lifetime
     int filepaths_len = 1000;
     char** filepaths;
-    filepaths = malloc(filepaths_len * sizeof(void *));
+    filepaths = malloc(filepaths_len * sizeof(void*));
 
     // loop over local packages, add to set
     int filepath_i = 0;
@@ -214,14 +216,14 @@ int main(int argc, const char* argv[]) {
         for(size_t i = 0; i < filelist->count; i++) {
             if (filepath_i >= filepaths_len) {
                 filepaths_len *= 2;
-                filepaths = realloc(filepaths, filepaths_len * sizeof(void *));
+                filepaths = realloc(filepaths, filepaths_len * sizeof(void*));
                 if (filepaths == NULL) {
                     fprintf(stderr, "realloc of file path array failed!\n");
                     exit(EXIT_FAILURE);
                 }
             }
 
-            const alpm_file_t *file = filelist->files + i;
+            const alpm_file_t* file = filelist->files + i;
             filepaths[filepath_i] = malloc(strlen(root) + strlen(file->name) + 1);
             strcpy(filepaths[filepath_i], root);
             strcat(filepaths[filepath_i], file->name);
