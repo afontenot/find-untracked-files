@@ -3,6 +3,7 @@
 #include <bits/struct_stat.h>
 #include <dirent.h>
 #include <errno.h>
+#include <glib.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -10,7 +11,6 @@
 #include <sys/stat.h>
 
 #include "lib/argparse.h"      // for argparse_describe, argparse_init, argp...
-#include "lib/cc_hashset.h"    // for CC_HashSet, cc_hashset_add, cc_hashset...
 
 // fallback method that calls lstat to get file type
 int getfiletype(char* path) {
@@ -42,10 +42,10 @@ int getfiletype(char* path) {
 //   at each recursion. On sensible modern Arch systems this shouldn't be a
 //   problem, but in theory we could run out.
 // Arguments: requires a callback function to be passed that takes a string
-//   and a CC_HashSet; we pass the latter on directly, and it determines
+//   and a GHashTable; we pass the latter on directly, and it determines
 //   whether to print the string based on whether it is in the hashset.
 int walkdir(char* path, int symlinks, bool silent,
-            int (* callback)(char*, CC_HashSet*), CC_HashSet* hs) {
+            int (* callback)(char*, GHashTable*), GHashTable* hs) {
     // try to open the dir; we don't fail on access errors
     // preferring to print a warning and continue instead
     DIR* dir = opendir(path);
@@ -131,8 +131,8 @@ int walkdir(char* path, int symlinks, bool silent,
 }
 
 // decides whether to print a file path; function passed to walkdir()
-int printdir(char* filepath, CC_HashSet* hs) {
-    if (!cc_hashset_contains(hs, (void*) filepath)) {
+int printdir(char* filepath, GHashTable* hs) {
+    if (!g_hash_table_contains(hs, (void*) filepath)) {
         printf("%s\n", filepath);
     }
     return 0;
@@ -177,8 +177,7 @@ int main(int argc, const char* argv[]) {
     }
 
     // initialize hash set
-    CC_HashSet* hs;
-    cc_hashset_new(&hs);
+    GHashTable* hs = g_hash_table_new(g_str_hash, g_str_equal);
 
     // get handle to local database
     alpm_errno_t alpm_err;
@@ -226,7 +225,7 @@ int main(int argc, const char* argv[]) {
             filepaths[filepath_i] = malloc(strlen(root) + strlen(file->name) + 1);
             strcpy(filepaths[filepath_i], root);
             strcat(filepaths[filepath_i], file->name);
-            cc_hashset_add(hs, filepaths[filepath_i]);
+            g_hash_table_add(hs, filepaths[filepath_i]);
             filepath_i++;
         }
     }
@@ -255,7 +254,7 @@ int main(int argc, const char* argv[]) {
     }
 
     // clean up hashset
-    cc_hashset_destroy(hs);
+    g_hash_table_destroy(hs);
 
     // deallocate file path array
     for (int i = 0; i <= filepath_i; i++) {
