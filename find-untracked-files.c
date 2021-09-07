@@ -208,6 +208,9 @@ int main(int argc, const char* argv[]) {
     char** filepaths;
     filepaths = malloc(filepaths_len * sizeof(void*));
 
+    // cache root length
+    int root_len = strlen(root);
+
     // loop over local packages, add to set
     int filepath_i = 0;
     for (alpm_list_t* lp = pkgs; lp; lp = alpm_list_next(lp)) {
@@ -224,7 +227,7 @@ int main(int argc, const char* argv[]) {
             }
 
             const alpm_file_t* file = filelist->files + i;
-            filepaths[filepath_i] = malloc(strlen(root) + strlen(file->name) + 1);
+            filepaths[filepath_i] = malloc(root_len + strlen(file->name) + 1);
             strcpy(filepaths[filepath_i], root);
             strcat(filepaths[filepath_i], file->name);
             g_hash_table_add(hs, filepaths[filepath_i]);
