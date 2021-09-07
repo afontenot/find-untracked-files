@@ -75,7 +75,7 @@ int walkdir(char* path, int symlinks, bool silent,
         // reconstruct the full path
         // not too wasteful, we have to check the hashmap for the path anyway
         // account for \0 termination and additional '/'
-        int pathlen = strlen(path) + strlen(entry->d_name) + 2;
+        size_t pathlen = strlen(path) + strlen(entry->d_name) + 2;
         char fullpath[pathlen];
         strcpy(fullpath, path);
         strcat(fullpath, "/"); // we know that path is not terminated with /
@@ -155,11 +155,9 @@ int main(int argc, const char* argv[]) {
     struct argparse_option options[] = {
         OPT_HELP(),
         OPT_STRING('r', "root", &root,
-                   "path to the root dir for pkg install "
-                   "(default: '/')"),
+                   "path to the root dir for pkg install (default: '/')"),
         OPT_STRING('d', "db", &db,
-                   "path to the pkg database "
-                   "(default: '/var/lib/pacman')"),
+                   "path to the pkg database (default: '/var/lib/pacman')"),
         OPT_BOOLEAN('n', "no-symlinks", &nosymlinks,
                     "disable checking symbolic links "),
         OPT_BOOLEAN('q', "quiet", &silent,
@@ -204,15 +202,15 @@ int main(int argc, const char* argv[]) {
 
     // we modify the file paths to add the root file path
     // so we have to keep the pointers in scope for the full hashmap lifetime
-    int filepaths_len = 1000;
+    size_t filepaths_len = 1000;
     char** filepaths;
     filepaths = malloc(filepaths_len * sizeof(void*));
 
     // cache root length
-    int root_len = strlen(root);
+    size_t root_len = strlen(root);
 
     // loop over local packages, add to set
-    int filepath_i = 0;
+    size_t filepath_i = 0;
     for (alpm_list_t* lp = pkgs; lp; lp = alpm_list_next(lp)) {
         alpm_pkg_t* pkg = lp->data;
         alpm_filelist_t* filelist = alpm_pkg_get_files(pkg);
@@ -239,7 +237,7 @@ int main(int argc, const char* argv[]) {
     alpm_release(handle);
 
     // remaining args are all user-chosen paths to search
-    for (int i = 0; i < argc; i++) {
+    for (size_t i = 0; i < argc; i++) {
         char* path = strdup(*(argv + i));
 
         // because we match path strings exactly, delete trailing slash
@@ -262,7 +260,7 @@ int main(int argc, const char* argv[]) {
     g_hash_table_destroy(hs);
 
     // deallocate file path array
-    for (int i = 0; i <= filepath_i; i++) {
+    for (size_t i = 0; i <= filepath_i; i++) {
         free(filepaths[i]);
     }
     free(filepaths);
