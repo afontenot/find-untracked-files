@@ -131,7 +131,7 @@ int walkdir(char* path, int symlinks, bool silent,
 
 // decides whether to print a file path; function passed to walkdir()
 int printdir(char* filepath, GHashTable* hs) {
-    if (!g_hash_table_contains(hs, (void*) filepath)) {
+    if (!g_hash_table_contains(hs, filepath)) {
         printf("%s\n", filepath);
     }
     return 0;
