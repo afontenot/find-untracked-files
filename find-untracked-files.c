@@ -70,9 +70,10 @@ int walkdir(char* path, int symlinks, bool silent,
     // read through every entry in directory
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
-        // reconstruct the full path
-        // not too wasteful, we have to check the hashmap for the path anyway
-        // account for \0 termination and additional '/'
+        /* reconstruct the full path
+         * not too wasteful, we have to check the hashmap for the path anyway
+         * +2: account for \0 termination and additional '/'
+         */
         size_t pathlen = strlen(path) + strlen(entry->d_name) + 2;
         char fullpath[pathlen];
         strcpy(fullpath, path);
