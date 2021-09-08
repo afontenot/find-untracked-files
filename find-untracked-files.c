@@ -3,14 +3,13 @@
 #include <bits/struct_stat.h>
 #include <dirent.h>
 #include <errno.h>
-#include <glib.h>
+#include <getopt.h>            // for getopt_long
+#include <glib.h>              // for GHashTable
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
-#include "lib/argparse.h"      // for argparse_describe, argparse_init, argp...
 
 // fallback method that calls lstat to get file type
 int getfiletype(char* path) {
@@ -139,39 +138,96 @@ int printdir(char* filepath, GHashTable* hs) {
     return 0;
 }
 
-int main(int argc, const char* argv[]) {
-    // usage data for argparse
-    static const char* const usage[] = {
-        "find-untracked-files [options] "
-        "/path/to/search [/other/paths]",
-        NULL,
-    };
+void print_help(char exec_path[]){
+    static const char* const helptext =
+        "Usage: %s [OPTION]... [DIR]...\n"
+        "Search DIRs for any files not tracked by a Pacman database.\n\n"
+        "One or more DIR may be specified and will be searched sequentially.\n\n"
+        "Mandatory arguments to long options are mandatory for short options too.\n"
+        "  -r, --root=DIR       Specifies the root directory for package installations\n"
+        "                         (default DIR: /)\n"
+        "  -d, --db=DIR         Specifies the location of the Pacman database\n"
+        "                         (default DIR: /var/lib/pacman)\n"
+        "  -n, --no-symlinks    Disables checking the package database for symlinks\n"
+        "  -q, --quiet          Disables printing an error upon access failures\n\n\n"
+        "Issue tracker: https://github.com/afontenot/find-untracked-files\n"
+        "License: GPL-3.0-or-greater https://www.gnu.org/licenses/gpl-3.0.en.html\n";
+    printf(helptext, exec_path);
+}
 
-    // parse arguments - initialize with defaults
-    char root[] = "/";
-    char db[] = "/var/lib/pacman";
+int main(int argc, char* argv[]) {
+    // default arguments
+    char default_root[] = "/";
+    char* root = malloc(strlen(default_root) + 1);
+    strcpy(root, default_root);
+    char default_db[] = "/var/lib/pacman";
+    char* db = malloc(strlen(default_db) + 1);
+    strcpy(db, default_db);
     bool nosymlinks = false;
     bool silent = false;
-    struct argparse_option options[] = {
-        OPT_HELP(),
-        OPT_STRING('r', "root", &root,
-                   "path to the root dir for pkg install (default: '/')"),
-        OPT_STRING('d', "db", &db,
-                   "path to the pkg database (default: '/var/lib/pacman')"),
-        OPT_BOOLEAN('n', "no-symlinks", &nosymlinks,
-                    "disable checking symbolic links "),
-        OPT_BOOLEAN('q', "quiet", &silent,
-                    "disable printing all non-fatal errors"),
-        OPT_END(),
-    };
-    struct argparse argparse;
-    argparse_init(&argparse, options, usage, 0);
-    argparse_describe(&argparse, "\nFind files not tracked by Pacman", "");
-    argc = argparse_parse(&argparse, argc, argv);
 
-    // handle additional arguments (file paths)
-    if (argc == 0) {
-        fprintf(stderr, "No directory specified to search.\n");
+    // parse arguments
+    while (true) {
+        int opt;
+        int option_index = 0;
+        static struct option long_options[] = {
+            {"root",        required_argument, NULL, 'r'},
+            {"db",          required_argument, NULL, 'd'},
+            {"no-symlinks", no_argument,       NULL, 'n'},
+            {"quiet",       no_argument,       NULL, 'q'},
+            {"help",        no_argument,       NULL, 'h'},
+            {NULL,          0,                 NULL,  0 }
+        };
+
+        opt = getopt_long(argc, argv, "r:d:nqh",
+                          long_options, &option_index);
+        if (opt == -1)
+            break;
+
+        switch (opt) {
+        case 'r':
+            root = realloc(root, strlen(optarg) + 1);
+            if (root == NULL) {
+                printf("failed to realloc string for root argument\n");
+                exit(EXIT_FAILURE);
+            }
+            strcpy(root, optarg);
+            break;
+
+        case 'd':
+            db = realloc(db, strlen(optarg) + 1);
+            if (db == NULL) {
+                printf("failed to realloc string for db argument\n");
+                exit(EXIT_FAILURE);
+            }
+            strcpy(db, optarg);
+            break;
+
+        case 'n':
+            nosymlinks = true;
+            break;
+
+        case 'q':
+            silent = true;
+            break;
+
+        case 'h':
+            print_help(argv[0]);
+            exit(EXIT_SUCCESS);
+
+        case '?':
+            print_help(argv[0]);
+            exit(EXIT_FAILURE);
+
+        default:
+            printf("?? getopt returned character code 0%o ??\n", opt);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    if (optind >= argc) {
+        printf("No directory specified to search.\n\n");
+        print_help(argv[0]);
         exit(EXIT_FAILURE);
     }
 
@@ -237,7 +293,7 @@ int main(int argc, const char* argv[]) {
     alpm_release(handle);
 
     // remaining args are all user-chosen paths to search
-    for (size_t i = 0; i < argc; i++) {
+    for (size_t i = optind; i < argc; i++) {
         char* path = strdup(*(argv + i));
 
         // because we match path strings exactly, delete trailing slash
@@ -256,14 +312,18 @@ int main(int argc, const char* argv[]) {
         free(path);
     }
 
-    // clean up hashset
-    g_hash_table_destroy(hs);
-
     // deallocate file path array
     for (size_t i = 0; i <= filepath_i; i++) {
         free(filepaths[i]);
     }
     free(filepaths);
+
+    // clean up hashset
+    g_hash_table_destroy(hs);
+
+    // free strings for arguments
+    free(root);
+    free(db);
 
     exit(EXIT_SUCCESS);
 }
