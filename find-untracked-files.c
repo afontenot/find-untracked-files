@@ -46,10 +46,9 @@ int getfiletype(char* path) {
  */
 int walkdir(char* path, int symlinks, bool silent,
             int callback(char*, GHashTable*), GHashTable* hs) {
-    // try to open the dir; we don't fail on access errors
-    // preferring to print a warning and continue instead
     DIR* dir = opendir(path);
     if(!dir) {
+        // don't fail on access errors, print a warning and continue instead
         if (errno == EACCES) {
             if (!silent) {
                 fprintf(stderr,
@@ -80,13 +79,13 @@ int walkdir(char* path, int symlinks, bool silent,
         strcat(fullpath, "/"); // we know that path is not terminated with /
         strcat(fullpath, entry->d_name);
 
-        // if readdir adds d_type to our dirent we can avoid calling stat
-        // most systems support this, but an unusual FS may return DT_UNKNOWN
+        /* If readdir adds d_type to our dirent we can avoid calling stat.
+         * Most systems support this, but an unusual FS may return DT_UNKNOWN.
+         */
 #ifdef _DIRENT_HAVE_D_TYPE
         unsigned char type = entry->d_type;
-        if (type == DT_UNKNOWN) {
+        if (type == DT_UNKNOWN)
             type = getfiletype(fullpath);
-        }
 #else
         unsigned char type = getfiletype(fullpath);
 #endif
@@ -256,8 +255,9 @@ int main(int argc, char* argv[]) {
     // get a list of local packages
     alpm_list_t* pkgs = alpm_db_get_pkgcache(localdb);
 
-    // we modify the file paths to add the root file path
-    // so we have to keep the pointers in scope for the full hashmap lifetime
+    /* we modify the file paths to add the root file path, so we have to keep
+     * the pointers in scope for the lifetime of the hash table
+     */
     size_t filepaths_len = 1000;
     char** filepaths;
     filepaths = malloc(filepaths_len * sizeof(void*));
