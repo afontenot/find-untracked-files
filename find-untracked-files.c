@@ -3,13 +3,16 @@
 #include <bits/struct_stat.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>            // for getopt_long
 #include <glib.h>              // for GHashTable
+#include <linux/limits.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 
 // fallback method that calls lstat to get file type
 int getfiletype(char* path) {
@@ -40,46 +43,36 @@ int getfiletype(char* path) {
  * FIXME: we naively traverse the directories and hold open a file descriptor
  *   at each recursion. On sensible modern Arch systems this shouldn't be a
  *   problem, but in theory we could run out.
- * Arguments: requires a callback function to be passed that takes a string
- *   and a GHashTable; we pass the latter on directly, and it determines
- *   whether to print the string based on whether it is in the hashset.
  */
-int walkdir(char* path, int symlinks, bool silent,
-            int callback(char*, GHashTable*), GHashTable* hs) {
-    DIR* dir = opendir(path);
-    if(!dir) {
+int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset, 
+            size_t dir_offset, int symlinks, bool silent, GHashTable* hs) {
+    int dirfd = openat(fd, fullpath + dir_offset, 
+                     O_DIRECTORY | O_RDONLY);
+    if(dirfd == -1) {
         // don't fail on access errors, print a warning and continue instead
         if (errno == EACCES) {
             if (!silent) {
                 fprintf(stderr,
                         "find-untracked-files: cannot open "
                         "directory '%s': Permission denied\n",
-                        path);
+                        fullpath);
             }
             errno = 0;
             return 0;
         } else {
             fprintf(stderr,
                     "cannot open directory '%s': error %d\n",
-                    path,
+                    fullpath,
                     errno);
             return -1; // treat unknown errors as fatal
         }
     }
+    
+    DIR* dir = fdopendir(dirfd);
 
     // read through every entry in directory
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
-        /* reconstruct the full path
-         * not too wasteful, we have to check the hashmap for the path anyway
-         * +2: account for \0 termination and additional '/'
-         */
-        size_t pathlen = strlen(path) + strlen(entry->d_name) + 2;
-        char fullpath[pathlen];
-        strcpy(fullpath, path);
-        strcat(fullpath, "/"); // we know that path is not terminated with /
-        strcat(fullpath, entry->d_name);
-
         /* If readdir adds d_type to our dirent we can avoid calling stat.
          * Most systems support this, but an unusual FS may return DT_UNKNOWN.
          */
@@ -90,6 +83,14 @@ int walkdir(char* path, int symlinks, bool silent,
 #else
         unsigned char type = getfiletype(fullpath);
 #endif
+
+        /* reconstruct the full path
+            * not too wasteful, we have to check the hashmap for the path anyway
+            * +2: account for \0 termination and additional '/'
+            */
+        size_t namelen = strlen(entry->d_name) + 1;
+        strcpy(fullpath + path_offset, "/");
+        strcpy(fullpath + (path_offset + 1), entry->d_name);
 
         // verify that we have something sane
         if (type == DT_UNKNOWN) {
@@ -104,16 +105,18 @@ int walkdir(char* path, int symlinks, bool silent,
             if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
                 continue;
 
-            int wd_err = walkdir(fullpath, symlinks, silent, callback, hs);
+            // no plus one for the '/' because it's replacing a null
+            size_t offset = path_offset + namelen;
+            int wd_err = walkdir(dirfd, fullpath, root_len, offset, path_offset + 1, symlinks, silent, hs);
             if (wd_err)
                 return wd_err;
         }
 
         // handle regular files
         if (type == DT_REG || (type == DT_LNK && symlinks)) {
-            int cb_error = callback(fullpath, hs);
-            if (cb_error)
-                return cb_error;
+            if (!g_hash_table_contains(hs, fullpath + root_len)) {
+                printf("%s\n", fullpath);
+            }
         }
 
         // if we get this far, it isn't a file type we care about, so continue
@@ -127,14 +130,6 @@ int walkdir(char* path, int symlinks, bool silent,
 
     // clean up
     closedir(dir);
-    return 0;
-}
-
-// decides whether to print a file path; function passed to walkdir()
-int printdir(char* filepath, GHashTable* hs) {
-    if (!g_hash_table_contains(hs, filepath)) {
-        printf("%s\n", filepath);
-    }
     return 0;
 }
 
@@ -256,69 +251,41 @@ int main(int argc, char* argv[]) {
     // get a list of local packages
     alpm_list_t* pkgs = alpm_db_get_pkgcache(localdb);
 
-    /* we modify the file paths to add the root file path, so we have to keep
-     * the pointers in scope for the lifetime of the hash table
-     */
-    size_t filepaths_len = 1000;
-    char** filepaths;
-    filepaths = malloc(filepaths_len * sizeof(void*));
-
-    // cache root length
-    size_t root_len = strlen(root);
-
     // loop over local packages, add to set
-    size_t filepath_i = 0;
     for (alpm_list_t* lp = pkgs; lp; lp = alpm_list_next(lp)) {
         alpm_pkg_t* pkg = lp->data;
         alpm_filelist_t* filelist = alpm_pkg_get_files(pkg);
         for(size_t i = 0; i < filelist->count; i++) {
-            if (filepath_i >= filepaths_len) {
-                filepaths_len *= 2;
-                filepaths = realloc(filepaths, filepaths_len * sizeof(void*));
-                if (filepaths == NULL) {
-                    fprintf(stderr, "realloc of file path array failed!\n");
-                    exit(EXIT_FAILURE);
-                }
-            }
-
             const alpm_file_t* file = filelist->files + i;
-            filepaths[filepath_i] = malloc(root_len + strlen(file->name) + 1);
-            strcpy(filepaths[filepath_i], root);
-            strcat(filepaths[filepath_i], file->name);
-            g_hash_table_add(hs, filepaths[filepath_i]);
-            filepath_i++;
+            g_hash_table_add(hs, file->name);
         }
     }
 
-    // clean up alpm since we're caching modified path names
-    alpm_release(handle);
-
     // remaining args are all user-chosen paths to search
     for (size_t i = optind; i < argc; i++) {
-        char* path = strdup(*(argv + i));
+        char* path = malloc(PATH_MAX);
+        strcpy(path, *(argv + i));
 
         // because we match path strings exactly, delete trailing slash
         if (path[strlen(path)-1] == '/')
             path[strlen(path)-1] = '\0';
 
         // walk through file system
-        int rd_error = walkdir(path, !nosymlinks, silent, printdir, hs);
-        if (rd_error) {
+        size_t offset = strlen(path);
+        size_t root_len = strlen(root);
+        int walkerr = walkdir(0, path, root_len, offset, 0, !nosymlinks, silent, hs);
+        if (walkerr) {
             if (errno)
                 fprintf(stderr, "Error: %d\n", errno);
 
             exit(EXIT_FAILURE);
         }
-
         free(path);
     }
 
-    // deallocate file path array
-    for (size_t i = 0; i <= filepath_i; i++) {
-        free(filepaths[i]);
-    }
-    free(filepaths);
-
+    // clean up alpm
+    alpm_release(handle);
+    
     // clean up hashset
     g_hash_table_destroy(hs);
 
