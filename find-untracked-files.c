@@ -37,6 +37,13 @@ int getfiletype(char* path) {
            DT_UNKNOWN;
 }
 
+struct linux_dirent {
+    unsigned long  d_ino;
+    off_t          d_off;
+    unsigned short d_reclen;
+    char           d_name[];
+};
+
 /* Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
  *   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
  *   from real files. <ftw.h> calls stat on each file.
@@ -44,10 +51,9 @@ int getfiletype(char* path) {
  *   at each recursion. On sensible modern Arch systems this shouldn't be a
  *   problem, but in theory we could run out.
  */
-int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset, 
+int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset,
             size_t dir_offset, int symlinks, bool silent, GHashTable* hs) {
-    int dirfd = openat(fd, fullpath + dir_offset, 
-                     O_DIRECTORY | O_RDONLY);
+    int dirfd = openat(fd, fullpath + dir_offset, O_DIRECTORY | O_RDONLY);
     if(dirfd == -1) {
         // don't fail on access errors, print a warning and continue instead
         if (errno == EACCES) {
@@ -67,59 +73,60 @@ int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset,
             return -1; // treat unknown errors as fatal
         }
     }
-    
-    DIR* dir = fdopendir(dirfd);
 
     // read through every entry in directory
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != NULL) {
-        /* If readdir adds d_type to our dirent we can avoid calling stat.
-         * Most systems support this, but an unusual FS may return DT_UNKNOWN.
-         */
-#ifdef _DIRENT_HAVE_D_TYPE
-        unsigned char type = entry->d_type;
-        if (type == DT_UNKNOWN)
-            type = getfiletype(fullpath);
-#else
-        unsigned char type = getfiletype(fullpath);
-#endif
-
-        /* reconstruct the full path
-            * not too wasteful, we have to check the hashmap for the path anyway
-            * +2: account for \0 termination and additional '/'
-            */
-        size_t namelen = strlen(entry->d_name) + 1;
-        strcpy(fullpath + path_offset, "/");
-        strcpy(fullpath + (path_offset + 1), entry->d_name);
-
-        // verify that we have something sane
-        if (type == DT_UNKNOWN) {
-            fprintf(stderr, "FAIL: could not get "
-                    "file type of %s\n", fullpath);
+    long nread;
+    char buf[8192];
+    struct linux_dirent* entry;
+    while (true) {
+        nread = syscall(SYS_getdents, dirfd, buf, 8192);
+        if (nread == -1) {
+            fprintf(stderr, "Failed to get directory entries!\n");
             return -1;
         }
+        if (nread == 0)
+            break;
 
-        // recurse
-        if (type == DT_DIR) {
-            // readdir returns POSIX dot files
-            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
-                continue;
+        for (long bpos = 0; bpos < nread;) {
+            entry = (struct linux_dirent *) (buf + bpos);
+            unsigned char type = *(buf + bpos + entry->d_reclen - 1);
+            bpos += entry->d_reclen;
 
-            // no plus one for the '/' because it's replacing a null
-            size_t offset = path_offset + namelen;
-            int wd_err = walkdir(dirfd, fullpath, root_len, offset, path_offset + 1, symlinks, silent, hs);
-            if (wd_err)
-                return wd_err;
-        }
+            /* reconstruct the full path
+             * not too wasteful, we have to check the hashmap for the path anyway
+             */
+            strcpy(fullpath + path_offset, "/");
+            strcpy(fullpath + (path_offset + 1), entry->d_name);
 
-        // handle regular files
-        if (type == DT_REG || (type == DT_LNK && symlinks)) {
-            if (!g_hash_table_contains(hs, fullpath + root_len)) {
-                printf("%s\n", fullpath);
+            // verify that we have something sane
+            if (type == DT_UNKNOWN) {
+                fprintf(stderr, "FAIL: could not get file type of %s\n", fullpath);
+                return -1;
             }
-        }
 
-        // if we get this far, it isn't a file type we care about, so continue
+            // recurse
+            if (type == DT_DIR) {
+                // readdir returns POSIX dot files
+                if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+                    continue;
+
+                size_t offset = path_offset + strlen(entry->d_name) + 1;
+                int wd_err = walkdir(dirfd, fullpath, root_len, offset,
+                                     path_offset + 1, symlinks, silent, hs);
+                if (wd_err)
+                    return wd_err;
+            }
+
+            // handle regular files
+            if (type == DT_REG || (type == DT_LNK && symlinks)) {
+                // in the db, paths are missing the root dir, so remove it
+                if (!g_hash_table_contains(hs, fullpath + root_len)) {
+                    printf("%s\n", fullpath);
+                }
+            }
+
+            // if we get this far, it isn't a file type we care about, so continue
+        }
     }
 
     /* readdir() exits with NULL on error AND after returning the last file,
@@ -129,7 +136,7 @@ int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset,
         return -1;
 
     // clean up
-    closedir(dir);
+    close(dirfd);
     return 0;
 }
 
@@ -174,8 +181,7 @@ int main(int argc, char* argv[]) {
             {NULL,          0,                 NULL,  0 }
         };
 
-        opt = getopt_long(argc, argv, "r:d:nqh",
-                          long_options, &option_index);
+        opt = getopt_long(argc, argv, "r:d:nqh", long_options, &option_index);
         if (opt == -1)
             break;
 
@@ -285,7 +291,7 @@ int main(int argc, char* argv[]) {
 
     // clean up alpm
     alpm_release(handle);
-    
+
     // clean up hashset
     g_hash_table_destroy(hs);
 
