@@ -189,7 +189,7 @@ int main(int argc, char* argv[]) {
         case 'r':
             root = realloc(root, strlen(optarg) + 1);
             if (root == NULL) {
-                printf("failed to realloc string for root argument\n");
+                fprintf(stderr, "failed to realloc string for root argument\n");
                 exit(EXIT_FAILURE);
             }
             strcpy(root, optarg);
@@ -198,7 +198,7 @@ int main(int argc, char* argv[]) {
         case 'd':
             db = realloc(db, strlen(optarg) + 1);
             if (db == NULL) {
-                printf("failed to realloc string for db argument\n");
+                fprintf(stderr, "failed to realloc string for db argument\n");
                 exit(EXIT_FAILURE);
             }
             strcpy(db, optarg);
@@ -221,13 +221,13 @@ int main(int argc, char* argv[]) {
             exit(EXIT_FAILURE);
 
         default:
-            printf("?? getopt returned character code 0%o ??\n", opt);
+            fprintf(stderr, "?? getopt returned character code 0%o ??\n", opt);
             exit(EXIT_FAILURE);
         }
     }
 
     if (optind >= argc) {
-        printf("No directory specified to search.\n\n");
+        fprintf(stderr, "No directory specified to search.\n\n");
         print_help(argv[0]);
         exit(EXIT_FAILURE);
     }
