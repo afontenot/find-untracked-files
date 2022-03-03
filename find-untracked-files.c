@@ -1,18 +1,19 @@
 #include <alpm.h>              // for alpm_db_get_pkgcache, alpm_file_t, alp...
 #include <alpm_list.h>         // for alpm_list_next, alpm_list_t
-#include <bits/struct_stat.h>
-#include <dirent.h>
+#include <bits/getopt_core.h>
+#include <dirent.h>            // for DT_DIR, DT_LNK, DT_REG, DT_UNKNOWN
 #include <errno.h>
-#include <fcntl.h>
+#include <fcntl.h>             // for openat, O_DIRECTORY, O_RDONLY, S_IFBLK
 #include <getopt.h>            // for getopt_long
 #include <glib.h>              // for GHashTable
-#include <linux/limits.h>
+#include <limits.h>            // for PATH_MAX
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
+#include <syscall.h>           // for SYS_getdents
+#include <unistd.h>
 
 // fallback method that calls lstat to get file type
 int getfiletype(char* path) {
