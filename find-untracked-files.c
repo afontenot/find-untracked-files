@@ -14,6 +14,28 @@
 #include <syscall.h>           // for SYS_getdents
 #include <unistd.h>
 
+
+/* Program Architecture:
+ *
+ * The program:
+ *  1. Opens a handle to an alpm database at a user specified location.
+ *  2. Creates a hashset with every filepath part of an installed package.
+ *  3. Given a list of user specified paths, the program recursively walks
+ *     the file system for each path, and for each file (and optionally
+ *     symlink) checks whether it is part of an installed package, and if
+ *     not, prints it.
+ *
+ * Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
+ *   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
+ *   from real files. <ftw.h> calls stat on each file.
+ *
+ * FIXME: we naively traverse the directories and hold open a file descriptor
+ *   at each recursion. On sensible modern Arch systems this shouldn't be a
+ *   problem, but in theory we could run out.
+ */
+
+
+// struct representing an entry returned by a getdents syscall
 struct linux_dirent {
     unsigned long  d_ino;
     off_t          d_off;
@@ -21,47 +43,46 @@ struct linux_dirent {
     char           d_name[];
 };
 
-/* Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
- *   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
- *   from real files. <ftw.h> calls stat on each file.
- *
- * FIXME: we naively traverse the directories and hold open a file descriptor
- *   at each recursion. On sensible modern Arch systems this shouldn't be a
- *   problem, but in theory we could run out.
+/* A method that walks an open directory file descriptor, checks whether
+ * traversed files are in a hashset, and if so, prints them. Returns 0
+ * unless an error occurred, otherwise -1. Leaves errno set on error.
  *
  * Parameters:
  *  -> fd: open file descriptor to traverse
- *  -> root: path that the alpm database is relative to
- *  -> alpm_path: the path (relative to root) of the currently open directory
+ *  -> root: path that the hashset files are relative to (used for printing)
+ *  -> rel_path: the path (relative to root) of the currently open directory
+ *       note: the hashset only contains the relative path
  *  -> symlinks: whether to print unexpected symlinks (or only files)
  *  -> silent: whether to print permission errors on directories
- *  -> hs: the hashset containing all file paths known to the alpm db
+ *  -> hs: the GHashTable containing all file paths known to the alpm db
  */
-int walkfd(int fd, char* root, char* alpm_path, bool symlinks,
+int walkfd(int fd, char* root, char* rel_path, bool symlinks,
             bool silent, GHashTable* hs) {
     if(fd == -1) {
         // don't fail on access errors, print a warning and continue instead
         if (errno == EACCES) {
             if (!silent) {
-                fprintf(stderr, "find-untracked-files: cannot open "
-                        "directory '%s%s': Permission denied\n",
-                        root, alpm_path);
+                fprintf(stderr, "Cannot open directory '%s%s': "
+                                "Permission denied\n",
+                        root, rel_path);
             }
             errno = 0;
             return 0;
         } else {
-            fprintf(stderr, "cannot open directory '%s%s': error %d\n",
-                    root, alpm_path, errno);
+            fprintf(stderr, "Cannot open directory '%s%s': error %d\n",
+                    root, rel_path, errno);
             return -1; // treat unknown errors as fatal
         }
     }
 
     // read through every entry in directory
-    size_t path_length = strlen(alpm_path);
+    size_t path_length = strlen(rel_path);
     long nread;
     char buf[8192];
     struct linux_dirent* entry;
     while (true) {
+        // using a syscall is ugly, but since we already can't use fts/ftw
+        // it's not that much worse than readdir; it's also ~30% faster ;-)
         nread = syscall(SYS_getdents, fd, buf, 8192);
         if (nread == -1) {
             fprintf(stderr, "Failed to get directory entries!\n");
@@ -77,28 +98,28 @@ int walkfd(int fd, char* root, char* alpm_path, bool symlinks,
 
             /* Reconstruct the full path
              * Not wasteful, we have to check the hashmap for the path anyway.
-             * Note: for efficiency, we create the path using the same string
-             *   in memory repeatedly. So we store the length of the previous
-             *   path and append the new entry to it.
+             * Note: for efficiency, we reuse the same string in memory
+             *   repeatedly. So we store the length of the previous path and
+             *   append the new entry to it.
              */
-            strcpy(alpm_path + path_length, "/");
-            strcpy(alpm_path + (path_length + 1), entry->d_name);
+            strcpy(rel_path + path_length, "/");
+            strcpy(rel_path + (path_length + 1), entry->d_name);
 
             // verify that we have something sane
             if (type == DT_UNKNOWN) {
                 fprintf(stderr, "FAIL: could not get file type of %s%s\n",
-                        root, alpm_path);
+                        root, rel_path);
                 return -1;
             }
 
             // recurse
-            if (type == DT_DIR) {
+            else if (type == DT_DIR) {
                 // readdir returns POSIX dot files
                 if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
                     continue;
 
                 int nextfd = openat(fd, entry->d_name, O_DIRECTORY | O_RDONLY);
-                int wd_err = walkfd(nextfd, root, alpm_path, symlinks, silent, hs);
+                int wd_err = walkfd(nextfd, root, rel_path, symlinks, silent, hs);
                 close(nextfd);
                 if (wd_err) {
                     return wd_err;
@@ -106,10 +127,9 @@ int walkfd(int fd, char* root, char* alpm_path, bool symlinks,
             }
 
             // handle regular files
-            if (type == DT_REG || (type == DT_LNK && symlinks)) {
-                // in the db, paths are missing the root dir, so remove it
-                if (!g_hash_table_contains(hs, alpm_path)) {
-                    printf("%s%s\n", root, alpm_path);
+            else if (type == DT_REG || (type == DT_LNK && symlinks)) {
+                if (!g_hash_table_contains(hs, rel_path)) {
+                    printf("%s%s\n", root, rel_path);
                 }
             }
 
@@ -225,12 +245,7 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    /* FIXME: figure out why alpm_initialize is setting errno
-     *
-     * alpm_initialize apparently sets errno for some correctable failures; we
-     * have to reset it to zero here because readdir does not unambiguously
-     * signal failure, thus requiring explicit errno checks
-     */
+    // FIXME: figure out why alpm_initialize is setting errno
     errno = 0;
 
     alpm_db_t* localdb = alpm_get_localdb(handle);
@@ -273,7 +288,7 @@ int main(int argc, char* argv[]) {
         close(fd);
         if (walkerr) {
             if (errno)
-                fprintf(stderr, "Error: %d\n", errno);
+                fprintf(stderr, "errno %d\n", errno);
 
             exit(EXIT_FAILURE);
         }
