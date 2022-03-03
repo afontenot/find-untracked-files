@@ -11,32 +11,8 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <syscall.h>           // for SYS_getdents
 #include <unistd.h>
-
-// fallback method that calls lstat to get file type
-int getfiletype(char* path) {
-    struct stat sb;
-    int stat_err = lstat(path, &sb);
-
-    // bubble up errors
-    if (stat_err == -1)
-        return -1;
-
-    // get the file type flags
-    int fmt = (sb.st_mode & S_IFMT);
-
-    // return dirent.h type from stat.h type
-    return (fmt == S_IFREG) ? DT_REG :
-           (fmt == S_IFDIR) ? DT_DIR :
-           (fmt == S_IFLNK) ? DT_LNK :
-           (fmt == S_IFBLK) ? DT_BLK :
-           (fmt == S_IFCHR) ? DT_CHR :
-           (fmt == S_IFIFO) ? DT_FIFO :
-           (fmt == S_IFSOCK) ? DT_SOCK :
-           DT_UNKNOWN;
-}
 
 struct linux_dirent {
     unsigned long  d_ino;
