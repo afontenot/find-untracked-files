@@ -24,39 +24,45 @@ struct linux_dirent {
 /* Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
  *   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
  *   from real files. <ftw.h> calls stat on each file.
+ *
  * FIXME: we naively traverse the directories and hold open a file descriptor
  *   at each recursion. On sensible modern Arch systems this shouldn't be a
  *   problem, but in theory we could run out.
+ *
+ * Parameters:
+ *  -> fd: open file descriptor to traverse
+ *  -> root: path that the alpm database is relative to
+ *  -> alpm_path: the path (relative to root) of the currently open directory
+ *  -> symlinks: whether to print unexpected symlinks (or only files)
+ *  -> silent: whether to print permission errors on directories
+ *  -> hs: the hashset containing all file paths known to the alpm db
  */
-int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset,
-            size_t dir_offset, int symlinks, bool silent, GHashTable* hs) {
-    int dirfd = openat(fd, fullpath + dir_offset, O_DIRECTORY | O_RDONLY);
-    if(dirfd == -1) {
+int walkfd(int fd, char* root, char* alpm_path, bool symlinks,
+            bool silent, GHashTable* hs) {
+    if(fd == -1) {
         // don't fail on access errors, print a warning and continue instead
         if (errno == EACCES) {
             if (!silent) {
-                fprintf(stderr,
-                        "find-untracked-files: cannot open "
-                        "directory '%s': Permission denied\n",
-                        fullpath);
+                fprintf(stderr, "find-untracked-files: cannot open "
+                        "directory '%s%s': Permission denied\n",
+                        root, alpm_path);
             }
             errno = 0;
             return 0;
         } else {
-            fprintf(stderr,
-                    "cannot open directory '%s': error %d\n",
-                    fullpath,
-                    errno);
+            fprintf(stderr, "cannot open directory '%s%s': error %d\n",
+                    root, alpm_path, errno);
             return -1; // treat unknown errors as fatal
         }
     }
 
     // read through every entry in directory
+    size_t path_length = strlen(alpm_path);
     long nread;
     char buf[8192];
     struct linux_dirent* entry;
     while (true) {
-        nread = syscall(SYS_getdents, dirfd, buf, 8192);
+        nread = syscall(SYS_getdents, fd, buf, 8192);
         if (nread == -1) {
             fprintf(stderr, "Failed to get directory entries!\n");
             return -1;
@@ -69,15 +75,19 @@ int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset,
             unsigned char type = *(buf + bpos + entry->d_reclen - 1);
             bpos += entry->d_reclen;
 
-            /* reconstruct the full path
-             * not too wasteful, we have to check the hashmap for the path anyway
+            /* Reconstruct the full path
+             * Not wasteful, we have to check the hashmap for the path anyway.
+             * Note: for efficiency, we create the path using the same string
+             *   in memory repeatedly. So we store the length of the previous
+             *   path and append the new entry to it.
              */
-            strcpy(fullpath + path_offset, "/");
-            strcpy(fullpath + (path_offset + 1), entry->d_name);
+            strcpy(alpm_path + path_length, "/");
+            strcpy(alpm_path + (path_length + 1), entry->d_name);
 
             // verify that we have something sane
             if (type == DT_UNKNOWN) {
-                fprintf(stderr, "FAIL: could not get file type of %s\n", fullpath);
+                fprintf(stderr, "FAIL: could not get file type of %s%s\n",
+                        root, alpm_path);
                 return -1;
             }
 
@@ -87,18 +97,19 @@ int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset,
                 if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
                     continue;
 
-                size_t offset = path_offset + strlen(entry->d_name) + 1;
-                int wd_err = walkdir(dirfd, fullpath, root_len, offset,
-                                     path_offset + 1, symlinks, silent, hs);
-                if (wd_err)
+                int nextfd = openat(fd, entry->d_name, O_DIRECTORY | O_RDONLY);
+                int wd_err = walkfd(nextfd, root, alpm_path, symlinks, silent, hs);
+                close(nextfd);
+                if (wd_err) {
                     return wd_err;
+                }
             }
 
             // handle regular files
             if (type == DT_REG || (type == DT_LNK && symlinks)) {
                 // in the db, paths are missing the root dir, so remove it
-                if (!g_hash_table_contains(hs, fullpath + root_len)) {
-                    printf("%s\n", fullpath);
+                if (!g_hash_table_contains(hs, alpm_path)) {
+                    printf("%s%s\n", root, alpm_path);
                 }
             }
 
@@ -106,14 +117,7 @@ int walkdir(int fd, char* fullpath, size_t root_len, size_t path_offset,
         }
     }
 
-    /* readdir() exits with NULL on error AND after returning the last file,
-     * so we have to check for errors explicitly. See `man 3 readdir`
-     */
-    if (errno)
-        return -1;
-
-    // clean up
-    close(dirfd);
+    // if all directory entries have been handled, then there's no error
     return 0;
 }
 
@@ -253,10 +257,20 @@ int main(int argc, char* argv[]) {
         if (path[strlen(path)-1] == '/')
             path[strlen(path)-1] = '\0';
 
+        // sanity check: path must be inside the specified root
+        if (strncmp(root, path, strlen(root))) {
+            fprintf(stderr, "Error: path '%s' not in the root '%s'\n",
+                    path, root);
+            exit(EXIT_FAILURE);
+        }
+
+        // get the path we expect to find in the database (without root)
+        char* alpm_path = path + strlen(root);
+
         // walk through file system
-        size_t offset = strlen(path);
-        size_t root_len = strlen(root);
-        int walkerr = walkdir(0, path, root_len, offset, 0, !nosymlinks, silent, hs);
+        int fd = open(path, O_DIRECTORY | O_RDONLY);
+        int walkerr = walkfd(fd, root, alpm_path, !nosymlinks, silent, hs);
+        close(fd);
         if (walkerr) {
             if (errno)
                 fprintf(stderr, "Error: %d\n", errno);
