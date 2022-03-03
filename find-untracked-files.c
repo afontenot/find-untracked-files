@@ -1,162 +1,45 @@
-#include <alpm.h>              // for alpm_db_get_pkgcache, alpm_file_t, alp...
-#include <alpm_list.h>         // for alpm_list_next, alpm_list_t
-#include <bits/getopt_core.h>
-#include <dirent.h>            // for DT_DIR, DT_LNK, DT_REG, DT_UNKNOWN
+#include <alpm.h>
+#include <alpm_list.h>
+#include <bits/getopt_core.h>  // for optarg, optind
 #include <errno.h>
-#include <fcntl.h>             // for openat, O_DIRECTORY, O_RDONLY, S_IFBLK
-#include <getopt.h>            // for getopt_long
-#include <glib.h>              // for GHashTable
+#include <fcntl.h>             // for openat, O_DIRECTORY, O_RDONLY
+#include <getopt.h>            // for getopt_long, etc
+#include <glib.h>              // for GHashTable, etc
 #include <limits.h>            // for PATH_MAX
-#include <stdio.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <syscall.h>           // for SYS_getdents
 #include <unistd.h>
 
+#include "walkfd.h"
 
-/* Program Architecture:
+
+/* Program structure:
  *
- * The program:
- *  1. Opens a handle to an alpm database at a user specified location.
+ *  1. Open a handle to an alpm database at a user specified location.
  *  2. Creates a hashset with every filepath part of an installed package.
  *  3. Given a list of user specified paths, the program recursively walks
  *     the file system for each path, and for each file (and optionally
  *     symlink) checks whether it is part of an installed package, and if
  *     not, prints it.
- *
- * Why use a custom tree walker instead of <fts.h> or <ftw.h>? When using
- *   <fts.h> with FTS_NOSTAT you can't use the DIRENT to distinguish symlinks
- *   from real files. <ftw.h> calls stat on each file.
- *
- * FIXME: we naively traverse the directories and hold open a file descriptor
- *   at each recursion. On sensible modern Arch systems this shouldn't be a
- *   problem, but in theory we could run out.
  */
 
 
-// struct representing an entry returned by a getdents syscall
-struct linux_dirent {
-    unsigned long  d_ino;
-    off_t          d_off;
-    unsigned short d_reclen;
-    char           d_name[];
-};
+static const char* const helptext =
+    "Usage: %s [OPTION]... [DIR]...\n"
+    "Search DIRs for any files not tracked by a Pacman database.\n\n"
+    "One or more DIR may be specified and will be searched sequentially.\n\n"
+    "Mandatory arguments to long options are mandatory for short options too.\n"
+    "  -r, --root=DIR       Specifies the root directory for package installations\n"
+    "                         (default DIR: /)\n"
+    "  -d, --db=DIR         Specifies the location of the Pacman database\n"
+    "                         (default DIR: /var/lib/pacman)\n"
+    "  -n, --no-symlinks    Disables checking the package database for symlinks\n"
+    "  -q, --quiet          Disables printing an error upon access failures\n\n\n"
+    "Issue tracker: https://github.com/afontenot/find-untracked-files\n"
+    "License: GPL-3.0-or-greater https://www.gnu.org/licenses/gpl-3.0.en.html\n";
 
-/* A method that walks an open directory file descriptor, checks whether
- * traversed files are in a hashset, and if so, prints them. Returns 0
- * unless an error occurred, otherwise -1. Leaves errno set on error.
- *
- * Parameters:
- *  -> fd: open file descriptor to traverse
- *  -> root: path that the hashset files are relative to (used for printing)
- *  -> rel_path: the path (relative to root) of the currently open directory
- *       note: the hashset only contains the relative path
- *  -> symlinks: whether to print unexpected symlinks (or only files)
- *  -> silent: whether to print permission errors on directories
- *  -> hs: the GHashTable containing all file paths known to the alpm db
- */
-int walkfd(int fd, char* root, char* rel_path, bool symlinks,
-            bool silent, GHashTable* hs) {
-    if(fd == -1) {
-        // don't fail on access errors, print a warning and continue instead
-        if (errno == EACCES) {
-            if (!silent) {
-                fprintf(stderr, "Cannot open directory '%s%s': "
-                                "Permission denied\n",
-                        root, rel_path);
-            }
-            errno = 0;
-            return 0;
-        } else {
-            fprintf(stderr, "Cannot open directory '%s%s': error %d\n",
-                    root, rel_path, errno);
-            return -1; // treat unknown errors as fatal
-        }
-    }
-
-    // read through every entry in directory
-    size_t path_length = strlen(rel_path);
-    long nread;
-    char buf[8192];
-    struct linux_dirent* entry;
-    while (true) {
-        // using a syscall is ugly, but since we already can't use fts/ftw
-        // it's not that much worse than readdir; it's also ~30% faster ;-)
-        nread = syscall(SYS_getdents, fd, buf, 8192);
-        if (nread == -1) {
-            fprintf(stderr, "Failed to get directory entries!\n");
-            return -1;
-        }
-        if (nread == 0)
-            break;
-
-        for (long bpos = 0; bpos < nread;) {
-            entry = (struct linux_dirent *) (buf + bpos);
-            unsigned char type = *(buf + bpos + entry->d_reclen - 1);
-            bpos += entry->d_reclen;
-
-            /* Reconstruct the full path
-             * Not wasteful, we have to check the hashmap for the path anyway.
-             * Note: for efficiency, we reuse the same string in memory
-             *   repeatedly. So we store the length of the previous path and
-             *   append the new entry to it.
-             */
-            strcpy(rel_path + path_length, "/");
-            strcpy(rel_path + (path_length + 1), entry->d_name);
-
-            // verify that we have something sane
-            if (type == DT_UNKNOWN) {
-                fprintf(stderr, "FAIL: could not get file type of %s%s\n",
-                        root, rel_path);
-                return -1;
-            }
-
-            // recurse
-            else if (type == DT_DIR) {
-                // readdir returns POSIX dot files
-                if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
-                    continue;
-
-                int nextfd = openat(fd, entry->d_name, O_DIRECTORY | O_RDONLY);
-                int wd_err = walkfd(nextfd, root, rel_path, symlinks, silent, hs);
-                close(nextfd);
-                if (wd_err) {
-                    return wd_err;
-                }
-            }
-
-            // handle regular files
-            else if (type == DT_REG || (type == DT_LNK && symlinks)) {
-                if (!g_hash_table_contains(hs, rel_path)) {
-                    printf("%s%s\n", root, rel_path);
-                }
-            }
-
-            // if we get this far, it isn't a file type we care about, so continue
-        }
-    }
-
-    // if all directory entries have been handled, then there's no error
-    return 0;
-}
-
-void print_help(char exec_path[]){
-    static const char* const helptext =
-        "Usage: %s [OPTION]... [DIR]...\n"
-        "Search DIRs for any files not tracked by a Pacman database.\n\n"
-        "One or more DIR may be specified and will be searched sequentially.\n\n"
-        "Mandatory arguments to long options are mandatory for short options too.\n"
-        "  -r, --root=DIR       Specifies the root directory for package installations\n"
-        "                         (default DIR: /)\n"
-        "  -d, --db=DIR         Specifies the location of the Pacman database\n"
-        "                         (default DIR: /var/lib/pacman)\n"
-        "  -n, --no-symlinks    Disables checking the package database for symlinks\n"
-        "  -q, --quiet          Disables printing an error upon access failures\n\n\n"
-        "Issue tracker: https://github.com/afontenot/find-untracked-files\n"
-        "License: GPL-3.0-or-greater https://www.gnu.org/licenses/gpl-3.0.en.html\n";
-    printf(helptext, exec_path);
-}
 
 int main(int argc, char* argv[]) {
     // default arguments
@@ -214,11 +97,11 @@ int main(int argc, char* argv[]) {
             break;
 
         case 'h':
-            print_help(argv[0]);
+            printf(helptext, argv[0]);
             exit(EXIT_SUCCESS);
 
         case '?':
-            print_help(argv[0]);
+            printf(helptext, argv[0]);
             exit(EXIT_FAILURE);
 
         default:
@@ -229,7 +112,7 @@ int main(int argc, char* argv[]) {
 
     if (optind >= argc) {
         fprintf(stderr, "No directory specified to search.\n\n");
-        print_help(argv[0]);
+        printf(helptext, argv[0]);
         exit(EXIT_FAILURE);
     }
 

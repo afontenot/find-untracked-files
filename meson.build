@@ -1,5 +1,5 @@
 project('find-untracked-files', 'c')
-src = ['find-untracked-files.c']
+src = ['find-untracked-files.c', 'walkfd.c']
 alpm = [dependency('libalpm')]
 glib = [dependency('glib-2.0')]
 cc = ['-O3', '-Wall', '-Wpedantic']
