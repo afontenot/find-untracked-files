@@ -48,9 +48,10 @@ directly from ALPM and *caches* them using a hash table, making the
 search for each file very fast. (Hash table lookups have O(1) 
 average complexity.)
 
-Note that the C version of the program (as opposed to the default
-Python implementation, which is only about twice as slow) is
-experimental.
+Note: a simpler version of this program in Python is kept in the
+python-version branch of this repository. Because Python's `set`
+implementation is quite efficient, it's only 3-4 times slower than
+this one written in C, on a hot cache.
 
 ## How do I use the program?
 
@@ -86,11 +87,13 @@ Basic help is available in the program:
 
 ## How fast is it?
 
-Scanning my 750,000 file directory and checking for unowned files 
-takes my computer only ~1.5 seconds.
+Scanning my 800,000 file directory and checking for unowned files
+takes my computer only ~1.2 seconds, after running the program several
+times to cache the directory entries. That's over 500,000 entries per
+second.
 
-The find command utilizing parallel took more than 420 times longer
-to run! This is slow enough that it's difficult to re-run it to see
+The find command utilizing parallel took more 12 minutes, about 600 times
+longer! This is slow enough that it's difficult to re-run it to see
 changes after you've removed certain files or packages.
 
 `libalpm` is smart enough not to touch the disk twice to get the 
